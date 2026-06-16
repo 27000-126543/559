@@ -66,7 +66,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggle }) => {
       label: '参数模板',
       onClick: () => navigate('/schemas'),
     },
-    ...(isLeader()
+    ...(isAdmin()
       ? [
           {
             key: '/users',
@@ -74,10 +74,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggle }) => {
             label: '用户管理',
             onClick: () => navigate('/users'),
           },
-        ]
-      : []),
-    ...(isAdmin()
-      ? [
           {
             key: '/settings',
             icon: <Settings size={20} />,

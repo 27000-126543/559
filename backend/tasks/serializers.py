@@ -43,7 +43,7 @@ class ParameterSchemaSerializer(serializers.ModelSerializer):
 class TaskSerializer(serializers.ModelSerializer):
     project = ProjectSerializer(read_only=True)
     project_id = serializers.PrimaryKeyRelatedField(
-        queryset=None,
+        queryset=__import__('projects.models', fromlist=['Project']).Project.objects.none(),
         source='project',
         write_only=True
     )

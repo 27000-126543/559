@@ -1,11 +1,11 @@
-import React from 'react';
-import { ConfigProvider, App as AntdApp, theme } from 'antd';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { Provider } from 'react-redux';
+import React, { useEffect } from 'react';
+import { ConfigProvider, App as AntdApp, theme, Spin } from 'antd';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Provider, useDispatch, useSelector } from 'react-redux';
 import zhCN from 'antd/locale/zh_CN';
 import 'dayjs/locale/zh-cn';
 
-import { store } from '@/app/store';
+import { store, RootState } from '@/app/store';
 import MainLayout from '@/components/Layout/MainLayout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Login from '@/pages/Login';
@@ -21,6 +21,106 @@ import MessageCenter from '@/pages/MessageCenter';
 import SchemaList from '@/pages/SchemaList';
 import UserManagement from '@/pages/UserManagement';
 import SystemSettings from '@/pages/SystemSettings';
+import { useGetCurrentUserQuery } from '@/api';
+import { updateUser, logout, setLoading, selectAuthLoading, selectIsAuthenticated } from '@/store/authSlice';
+
+const AuthInitializer: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const hasToken = !!localStorage.getItem('access_token');
+  const isAuthenticated = useSelector(selectIsAuthenticated);
+  const authLoading = useSelector(selectAuthLoading);
+
+  const { isFetching, isError, data, refetch } = useGetCurrentUserQuery(undefined, {
+    skip: !hasToken,
+    refetchOnMountOrArgChange: false,
+  });
+
+  useEffect(() => {
+    if (hasToken) {
+      dispatch(setLoading(true));
+    }
+  }, [hasToken, dispatch]);
+
+  useEffect(() => {
+    if (data && !isFetching) {
+      dispatch(updateUser(data));
+      dispatch(setLoading(false));
+    }
+  }, [data, isFetching, dispatch]);
+
+  useEffect(() => {
+    if (isError && hasToken) {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user');
+      dispatch(logout());
+      dispatch(setLoading(false));
+      if (!location.pathname.includes('/login')) {
+        navigate('/login', { replace: true, state: { from: location } });
+      }
+    }
+  }, [isError, hasToken, dispatch, navigate, location]);
+
+  const isInitializing = hasToken && authLoading && !isAuthenticated;
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#141414]">
+        <Spin size="large" tip="加载中..." />
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+};
+
+const AppContent: React.FC = () => {
+  return (
+    <AuthInitializer>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <MainLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="projects" element={<ProjectList />} />
+          <Route path="projects/:id" element={<ProjectDetail />} />
+          <Route path="tasks" element={<TaskList />} />
+          <Route path="tasks/create" element={<TaskCreate />} />
+          <Route path="tasks/:id" element={<TaskDetail />} />
+          <Route path="results" element={<ResultList />} />
+          <Route path="results/:id" element={<ResultDetail />} />
+          <Route path="messages" element={<MessageCenter />} />
+          <Route path="schemas" element={<SchemaList />} />
+          <Route
+            path="users"
+            element={
+              <ProtectedRoute roles={['admin']}>
+                <UserManagement />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="settings"
+            element={
+              <ProtectedRoute roles={['admin']}>
+                <SystemSettings />
+              </ProtectedRoute>
+            }
+          />
+        </Route>
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </AuthInitializer>
+  );
+};
 
 const App: React.FC = () => {
   return (
@@ -79,46 +179,7 @@ const App: React.FC = () => {
       >
         <AntdApp>
           <Router>
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route
-                path="/"
-                element={
-                  <ProtectedRoute>
-                    <MainLayout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route index element={<Navigate to="/dashboard" replace />} />
-                <Route path="dashboard" element={<Dashboard />} />
-                <Route path="projects" element={<ProjectList />} />
-                <Route path="projects/:id" element={<ProjectDetail />} />
-                <Route path="tasks" element={<TaskList />} />
-                <Route path="tasks/create" element={<TaskCreate />} />
-                <Route path="tasks/:id" element={<TaskDetail />} />
-                <Route path="results" element={<ResultList />} />
-                <Route path="results/:id" element={<ResultDetail />} />
-                <Route path="messages" element={<MessageCenter />} />
-                <Route path="schemas" element={<SchemaList />} />
-                <Route
-                  path="users"
-                  element={
-                    <ProtectedRoute roles={['admin']}>
-                      <UserManagement />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="settings"
-                  element={
-                    <ProtectedRoute roles={['admin']}>
-                      <SystemSettings />
-                    </ProtectedRoute>
-                  }
-                />
-              </Route>
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
+            <AppContent />
           </Router>
         </AntdApp>
       </ConfigProvider>
