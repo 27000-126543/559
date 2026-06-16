@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: simulation_db
+      POSTGRES_USER: sim_user
+      POSTGRES_PASSWORD: sim_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sim_user -d simulation_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build: ./backend
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=simulation_db
+      - DB_USER=sim_user
+      - DB_PASSWORD=sim_password
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DJANGO_SETTINGS_MODULE=core.settings
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_worker:
+    build: ./backend
+    command: celery -A core worker -l info --concurrency=4
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=simulation_db
+      - DB_USER=sim_user
+      - DB_PASSWORD=sim_password
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DJANGO_SETTINGS_MODULE=core.settings
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_beat:
+    build: ./backend
+    command: celery -A core beat -l info
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=simulation_db
+      - DB_USER=sim_user
+      - DB_PASSWORD=sim_password
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DJANGO_SETTINGS_MODULE=core.settings
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  daphne:
+    build: ./backend
+    command: daphne -b 0.0.0.0 -p 8001 core.asgi:application
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    ports:
+      - "8001:8001"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=simulation_db
+      - DB_USER=sim_user
+      - DB_PASSWORD=sim_password
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DJANGO_SETTINGS_MODULE=core.settings
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  frontend:
+    build: ./frontend
+    command: npm run dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000/api
+      - VITE_WS_BASE_URL=ws://localhost:8001/ws
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
