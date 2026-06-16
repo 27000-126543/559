@@ -54,6 +54,8 @@ class TaskSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
+    created_by = UserSerializer(source='submitter', read_only=True)
+    created_by_id = serializers.IntegerField(source='submitter.id', read_only=True)
     approved_by = UserSerializer(read_only=True)
     parameter_schema = ParameterSchemaSerializer(read_only=True)
     parameter_schema_id = serializers.PrimaryKeyRelatedField(
@@ -63,28 +65,55 @@ class TaskSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True
     )
+    schema_id = serializers.IntegerField(source='parameter_schema.id', read_only=True, allow_null=True)
+    name = serializers.CharField(source='title', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    priority_str = serializers.SerializerMethodField()
     execution_time = serializers.IntegerField(source='get_execution_time', read_only=True)
     model_file_url = serializers.SerializerMethodField()
     result_file_url = serializers.SerializerMethodField()
+    updated_at = serializers.DateTimeField(source='last_operation_at', read_only=True)
+    result_count = serializers.SerializerMethodField()
+    logs = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
         fields = [
-            'id', 'title', 'description', 'project', 'project_id',
-            'submitter', 'submitter_id', 'status', 'status_display',
-            'priority', 'priority_display', 'parameters', 'parameter_schema',
-            'parameter_schema_id', 'model_file', 'model_file_url',
+            'id', 'title', 'name', 'description', 'project', 'project_id',
+            'submitter', 'submitter_id', 'created_by', 'created_by_id',
+            'status', 'status_display',
+            'priority', 'priority_display', 'priority_str',
+            'parameters', 'parameter_schema',
+            'parameter_schema_id', 'schema_id',
+            'model_file', 'model_file_url',
             'result_file', 'result_file_url', 'approved_by', 'approved_at',
-            'rejection_reason', 'progress', 'created_at', 'started_at',
-            'completed_at', 'last_operation_at', 'execution_time'
+            'rejection_reason', 'progress', 'created_at', 'updated_at',
+            'started_at', 'completed_at', 'last_operation_at',
+            'execution_time', 'result_count', 'logs'
         ]
         read_only_fields = [
             'id', 'status', 'approved_by', 'approved_at', 'progress',
             'created_at', 'started_at', 'completed_at', 'last_operation_at',
             'celery_task_id', 'result_file'
         ]
+
+    def get_priority_str(self, obj):
+        mapping = {1: 'low', 2: 'medium', 3: 'high', 4: 'high', 5: 'urgent'}
+        return mapping.get(obj.priority, 'medium')
+
+    def get_result_count(self, obj):
+        return 1 if hasattr(obj, 'result') and obj.result else 0
+
+    def get_logs(self, obj):
+        return []
+
+    PRIORITY_MAP = {
+        'low': 1,
+        'medium': 2,
+        'high': 3,
+        'urgent': 5,
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -97,6 +126,11 @@ class TaskSerializer(serializers.ModelSerializer):
                     models.Q(leader=request.user) | models.Q(members=request.user)
                 ).distinct()
             self.fields['project_id'].queryset = qs
+
+        self.fields['name'] = serializers.CharField(write_only=True, required=False)
+        self.fields['priority'] = serializers.IntegerField(required=False)
+        self.fields['priority_str'] = serializers.CharField(write_only=True, required=False)
+        self.fields['schema_id'] = serializers.IntegerField(write_only=True, required=False, allow_null=True)
 
     def get_model_file_url(self, obj):
         if obj.model_file:
@@ -114,6 +148,24 @@ class TaskSerializer(serializers.ModelSerializer):
             if not value.has_access(request.user):
                 raise serializers.ValidationError('您没有权限在该项目下创建任务')
         return value
+
+    def to_internal_value(self, data):
+        if 'name' in data and 'title' not in data:
+            data = dict(data)
+            data['title'] = data.pop('name')
+
+        if 'priority_str' in data and 'priority' not in data:
+            priority_str = data.pop('priority_str')
+            data['priority'] = self.PRIORITY_MAP.get(priority_str, 2)
+        elif isinstance(data.get('priority'), str):
+            data = dict(data)
+            data['priority'] = self.PRIORITY_MAP.get(data['priority'], 2)
+
+        if 'schema_id' in data and 'parameter_schema_id' not in data:
+            data = dict(data)
+            data['parameter_schema_id'] = data.pop('schema_id')
+
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
         parameters = attrs.get('parameters', {})
@@ -137,8 +189,17 @@ class TaskSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         if 'submitter' not in validated_data:
             validated_data['submitter'] = self.context['request'].user
+        validated_data.pop('name', None)
+        validated_data.pop('priority_str', None)
+        validated_data.pop('schema_id', None)
         task = Task.objects.create(**validated_data)
         return task
+
+    def update(self, instance, validated_data):
+        validated_data.pop('name', None)
+        validated_data.pop('priority_str', None)
+        validated_data.pop('schema_id', None)
+        return super().update(instance, validated_data)
 
 
 class TaskDetailSerializer(TaskSerializer):

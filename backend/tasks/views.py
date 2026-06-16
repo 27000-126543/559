@@ -79,6 +79,36 @@ class TaskViewSet(viewsets.ModelViewSet):
             task=task
         )
 
+    def _perform_approve(self, task, request, comment=None):
+        priority_order = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4}
+        celery_priority = priority_order.get(task.priority, 2)
+
+        celery_task = process_simulation_task.apply_async(
+            args=[task.id],
+            priority=celery_priority,
+            queue='simulation'
+        )
+        task.celery_task_id = celery_task.id
+        task.save()
+
+        Notification.objects.create(
+            recipient=task.submitter,
+            message=f'您的任务【{task.title}】已通过审核，即将开始执行。',
+            is_read=False,
+            task=task
+        )
+
+    def _perform_reject(self, task, request, comment=None):
+        task.rejection_reason = comment or '任务未通过审核'
+        task.save()
+
+        Notification.objects.create(
+            recipient=task.submitter,
+            message=f'您的任务【{task.title}】被拒绝，原因：{task.rejection_reason}',
+            is_read=False,
+            task=task
+        )
+
     @action(detail=True, methods=['post'], url_path='review')
     def review_task(self, request, pk=None):
         task = self.get_object()
@@ -88,6 +118,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         serializer = TaskReviewSerializer(data=request.data)
         if serializer.is_valid():
             action_type = serializer.validated_data['action']
+            comment = serializer.validated_data.get('rejection_reason') or serializer.validated_data.get('comment')
 
             with transaction.atomic():
                 if action_type == 'approve':
@@ -95,42 +126,57 @@ class TaskViewSet(viewsets.ModelViewSet):
                     task.approved_by = request.user
                     task.approved_at = timezone.now()
                     task.save()
-
-                    priority_order = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4}
-                    celery_priority = priority_order.get(task.priority, 2)
-
-                    celery_task = process_simulation_task.apply_async(
-                        args=[task.id],
-                        priority=celery_priority,
-                        queue='simulation'
-                    )
-                    task.celery_task_id = celery_task.id
-                    task.save()
-
-                    Notification.objects.create(
-                        recipient=task.submitter,
-                        message=f'您的任务【{task.title}】已通过审核，即将开始执行。',
-                        is_read=False,
-                        task=task
-                    )
+                    self._perform_approve(task, request, comment)
                     return Response({'detail': '任务已批准，即将开始执行'}, status=status.HTTP_200_OK)
-
                 else:
                     task.status = 'rejected'
                     task.approved_by = request.user
                     task.approved_at = timezone.now()
-                    task.rejection_reason = serializer.validated_data.get('rejection_reason')
-                    task.save()
-
-                    Notification.objects.create(
-                        recipient=task.submitter,
-                        message=f'您的任务【{task.title}】被拒绝，原因：{task.rejection_reason}',
-                        is_read=False,
-                        task=task
-                    )
+                    self._perform_reject(task, request, comment)
                     return Response({'detail': '任务已拒绝'}, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve_task(self, request, pk=None):
+        task = self.get_object()
+        if not task.can_approve(request.user):
+            return Response({'detail': '您没有权限审核此任务'}, status=status.HTTP_403_FORBIDDEN)
+
+        comment = request.data.get('comment') or request.data.get('rejection_reason')
+
+        with transaction.atomic():
+            task.status = 'approved'
+            task.approved_by = request.user
+            task.approved_at = timezone.now()
+            task.save()
+            self._perform_approve(task, request, comment)
+
+        from .serializers import TaskDetailSerializer
+        return Response({
+            'detail': '任务已批准，即将开始执行',
+            'task': TaskDetailSerializer(task).data
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='reject')
+    def reject_task(self, request, pk=None):
+        task = self.get_object()
+        if not task.can_approve(request.user):
+            return Response({'detail': '您没有权限审核此任务'}, status=status.HTTP_403_FORBIDDEN)
+
+        comment = request.data.get('comment') or request.data.get('rejection_reason') or '任务未通过审核'
+
+        with transaction.atomic():
+            task.status = 'rejected'
+            task.approved_by = request.user
+            task.approved_at = timezone.now()
+            self._perform_reject(task, request, comment)
+
+        from .serializers import TaskDetailSerializer
+        return Response({
+            'detail': '任务已拒绝',
+            'task': TaskDetailSerializer(task).data
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], url_path='validate-parameters')
     def validate_parameters(self, request):
@@ -229,6 +275,10 @@ class TaskViewSet(viewsets.ModelViewSet):
             )
 
         return Response({'detail': '任务已重新提交'}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='run')
+    def run_task(self, request, pk=None):
+        return self.restart_task(request, pk)
 
     @action(detail=False, methods=['post'], url_path='cleanup-archived')
     def trigger_cleanup(self, request):

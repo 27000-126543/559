@@ -15,7 +15,12 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['created_at', 'is_read']
 
     def get_queryset(self):
-        return Notification.objects.filter(recipient=self.request.user)
+        queryset = Notification.objects.filter(recipient=self.request.user)
+        read_param = self.request.query_params.get('read')
+        if read_param is not None:
+            is_read_value = read_param.lower() in ('true', '1', 'yes')
+            queryset = queryset.filter(is_read=is_read_value)
+        return queryset
 
     @action(detail=False, methods=['get'], url_path='unread')
     def get_unread(self, request):
@@ -45,7 +50,11 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         notification.mark_as_read()
-        return Response({'detail': '已标记为已读'}, status=status.HTTP_200_OK)
+        return Response({'detail': '已标记为已读', 'id': notification.id, 'is_read': True}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='read')
+    def mark_read_compat(self, request, pk=None):
+        return self.mark_read(request, pk)
 
     @action(detail=True, methods=['post'], url_path='mark-unread')
     def mark_unread(self, request, pk=None):
@@ -60,22 +69,14 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='mark-all-read')
     def mark_all_read(self, request):
-        serializer = NotificationMarkSerializer(data=request.data)
-        if serializer.is_valid():
-            with transaction.atomic():
-                if serializer.validated_data.get('all'):
-                    updated = self.get_queryset().filter(is_read=False).update(is_read=True)
-                    message = f'已将{updated}条消息标记为已读'
-                else:
-                    ids = serializer.validated_data.get('notification_ids', [])
-                    updated = self.get_queryset().filter(
-                        id__in=ids,
-                        is_read=False
-                    ).update(is_read=True)
-                    message = f'已将{updated}条消息标记为已读'
+        with transaction.atomic():
+            updated = self.get_queryset().filter(is_read=False).update(is_read=True)
+            message = f'已将{updated}条消息标记为已读'
+        return Response({'detail': message, 'updated_count': updated}, status=status.HTTP_200_OK)
 
-            return Response({'detail': message, 'updated_count': updated}, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    @action(detail=False, methods=['post'], url_path='read-all')
+    def mark_all_read_compat(self, request):
+        return self.mark_all_read(request)
 
     @action(detail=False, methods=['delete'], url_path='clear')
     def clear_notifications(self, request):

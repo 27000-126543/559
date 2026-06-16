@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'tasks',
     'results',
     'notifications',
+    'system_settings',
 ]
 
 MIDDLEWARE = [

@@ -1,5 +1,6 @@
-import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import { createApi, fetchBaseQuery, BaseQueryFn, FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query/react';
 import { API_BASE_URL } from '@/utils/constants';
+import { logout as logoutAction } from '@/store/authSlice';
 import {
   User,
   Project,
@@ -14,7 +15,38 @@ import {
   SystemSettings,
 } from '@/types';
 
-const baseQuery = fetchBaseQuery({
+class SimpleMutex {
+  private _locked = false;
+  private _queue: Array<() => void> = [];
+
+  isLocked(): boolean {
+    return this._locked;
+  }
+
+  async waitForUnlock(): Promise<void> {
+    if (!this._locked) return;
+    return new Promise<void>((resolve) => this._queue.push(resolve));
+  }
+
+  async acquire(): Promise<() => void> {
+    while (this._locked) {
+      await this.waitForUnlock();
+    }
+    this._locked = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this._locked = false;
+      const next = this._queue.shift();
+      if (next) next();
+    };
+  }
+}
+
+const mutex = new SimpleMutex();
+
+const rawBaseQuery = fetchBaseQuery({
   baseUrl: API_BASE_URL,
   prepareHeaders: (headers) => {
     const token = localStorage.getItem('access_token');
@@ -25,9 +57,68 @@ const baseQuery = fetchBaseQuery({
   },
 });
 
+const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> = async (
+  args,
+  api,
+  extraOptions
+) => {
+  await mutex.waitForUnlock();
+  let result = await rawBaseQuery(args, api, extraOptions);
+
+  if (result.error && result.error.status === 401) {
+    if (!mutex.isLocked()) {
+      const release = await mutex.acquire();
+      try {
+        const refreshToken = localStorage.getItem('refresh_token');
+        if (refreshToken) {
+          const refreshResult = await rawBaseQuery(
+            {
+              url: '/auth/refresh/',
+              method: 'POST',
+              body: { refresh: refreshToken },
+            },
+            api,
+            extraOptions
+          );
+          if (refreshResult.data) {
+            const { access } = (refreshResult.data as { access: string; refresh?: string });
+            localStorage.setItem('access_token', access);
+            if (refreshResult.data && (refreshResult.data as any).refresh) {
+              localStorage.setItem('refresh_token', (refreshResult.data as any).refresh);
+            }
+            result = await rawBaseQuery(args, api, extraOptions);
+          } else {
+            localStorage.removeItem('access_token');
+            localStorage.removeItem('refresh_token');
+            localStorage.removeItem('user');
+            api.dispatch(logoutAction());
+            if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+              window.location.href = '/login';
+            }
+          }
+        } else {
+          localStorage.removeItem('access_token');
+          localStorage.removeItem('refresh_token');
+          localStorage.removeItem('user');
+          api.dispatch(logoutAction());
+          if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+            window.location.href = '/login';
+          }
+        }
+      } finally {
+        release();
+      }
+    } else {
+      await mutex.waitForUnlock();
+      result = await rawBaseQuery(args, api, extraOptions);
+    }
+  }
+  return result;
+};
+
 export const apiSlice = createApi({
   reducerPath: 'api',
-  baseQuery,
+  baseQuery: baseQueryWithReauth,
   tagTypes: [
     'User',
     'Project',
